@@ -2,7 +2,6 @@ import streamlit as st
 from urllib.parse import urlencode
 import requests
 
-# Load secrets from .streamlit/secrets.toml
 API_URL = st.secrets["API_URL"]
 CLIENT_ID = st.secrets["CLIENT_ID"]
 COGNITO_DOMAIN = st.secrets["COGNITO_DOMAIN"]
@@ -11,7 +10,6 @@ REDIRECT_URI = st.secrets["REDIRECT_URI"]
 st.set_page_config(page_title="OWASP Top 10 Assistant", layout="centered")
 st.title("🔐 OWASP Top 10 Secure Coding Assistant")
 
-# Construct OAuth2 authorization URL
 auth_url = (
     f"https://{COGNITO_DOMAIN}/oauth2/authorize?" +
     urlencode({
@@ -22,12 +20,10 @@ auth_url = (
     })
 )
 
-# Step 1: Prompt user to log in
 if "access_token" not in st.session_state:
     st.markdown(f"[🔐 Login with Cognito]({auth_url})")
 
-    # If redirected back with code, exchange for tokens
-    query_params = st.query_params  # ✅ updated here
+    query_params = st.query_params
     if "code" in query_params:
         code = query_params["code"][0]
         token_url = f"https://{COGNITO_DOMAIN}/oauth2/token"
@@ -50,16 +46,13 @@ else:
     st.success("✅ Logged in successfully")
     st.markdown("Ask me anything about the **OWASP Top 10** vulnerabilities!")
 
-    # Step 2: Ask question
     question = st.text_input("📝 Your question")
-
     if st.button("Submit") and question:
         headers = {
             "Authorization": f"Bearer {st.session_state['access_token']}",
             "Content-Type": "application/json"
         }
         payload = {"input": question}
-
         res = requests.post(API_URL, json=payload, headers=headers)
 
         if res.status_code == 200:
@@ -71,5 +64,12 @@ else:
             st.text(res.text)
 
     if st.button("🚪 Logout"):
+        logout_url = (
+            f"https://{COGNITO_DOMAIN}/logout?" +
+            urlencode({
+                "client_id": CLIENT_ID,
+                "logout_uri": REDIRECT_URI
+            })
+        )
         st.session_state.clear()
-        st.experimental_rerun()
+        st.markdown(f'<meta http-equiv="refresh" content="0;url={logout_url}">', unsafe_allow_html=True)

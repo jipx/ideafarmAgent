@@ -1,3 +1,4 @@
+
 AWSTemplateFormatVersion: "2010-09-09"
 Description: OWASP Top 10 Agent API with Cognito Auth, API Gateway, and Lambda
 
@@ -5,6 +6,9 @@ Parameters:
   BedrockAgentId:
     Type: String
     Description: ID of the Amazon Bedrock Agent
+  CognitoDomainPrefix:
+    Type: String
+    Description: Globally unique domain prefix for Cognito Hosted UI
 
 Resources:
 
@@ -28,6 +32,8 @@ Resources:
         - code
       AllowedOAuthScopes:
         - openid
+        - email
+        - profile
       AllowedOAuthFlowsUserPoolClient: true
       CallbackURLs:
         - http://localhost:8501
@@ -35,6 +41,12 @@ Resources:
         - http://localhost:8501
       SupportedIdentityProviders:
         - COGNITO
+
+  CognitoUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: "owasp-login-jpx-2025-v2"
+      UserPoolId: !Ref CognitoUserPool
 
   ApiGatewayRestApi:
     Type: AWS::ApiGateway::RestApi
@@ -48,10 +60,16 @@ Resources:
       ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
       PathPart: ask
 
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: ApiMethodPostAsk
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      StageName: prod
+
   LambdaRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: owasp-agent-lambda-role
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -95,13 +113,17 @@ Resources:
 
               response = client.invoke_agent(
                   agentId=agent_id,
-                  input={
-                      "text": user_input
-                  }
+                  inputText=user_input
               )
+
+              text = response.get("completion", {}).get("text", "No response")
               return {
                   "statusCode": 200,
-                  "body": json.dumps({"output": response["completion"]["text"]})
+                  "headers": {
+                      "Access-Control-Allow-Origin": "*",
+                      "Access-Control-Allow-Headers": "*"
+                  },
+                  "body": json.dumps({"output": text})
               }
       Environment:
         Variables:
@@ -154,3 +176,6 @@ Outputs:
   ApiEndpoint:
     Value: 
       Fn::Sub: https://${ApiGatewayRestApi}.execute-api.${AWS::Region}.amazonaws.com/prod/ask
+
+  CognitoDomain:
+    Value: !Sub https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com
