@@ -27,7 +27,7 @@ if "access_token" not in st.session_state:
     st.markdown(f"[🔐 Login with Cognito]({auth_url})")
 
     # If redirected back with code, exchange for tokens
-    query_params = st.experimental_get_query_params()
+    query_params = st.query_params  # ✅ updated here
     if "code" in query_params:
         code = query_params["code"][0]
         token_url = f"https://{COGNITO_DOMAIN}/oauth2/token"
