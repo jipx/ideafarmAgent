@@ -1,0 +1,156 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: OWASP Top 10 Agent API with Cognito Auth, API Gateway, and Lambda
+
+Parameters:
+  BedrockAgentId:
+    Type: String
+    Description: ID of the Amazon Bedrock Agent
+
+Resources:
+
+  CognitoUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: owasp-user-pool
+      AutoVerifiedAttributes: [email]
+      UsernameAttributes: [email]
+
+  CognitoUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: owasp-client
+      UserPoolId: !Ref CognitoUserPool
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+        - ALLOW_USER_SRP_AUTH
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthScopes:
+        - openid
+      AllowedOAuthFlowsUserPoolClient: true
+      CallbackURLs:
+        - http://localhost:8501
+      LogoutURLs:
+        - http://localhost:8501
+      SupportedIdentityProviders:
+        - COGNITO
+
+  ApiGatewayRestApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: owasp-api
+
+  ApiResourceAsk:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: ask
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: owasp-agent-lambda-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: BedrockInvoke
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeAgent
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+
+  BedrockAgentLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: owasp-bedrock-agent
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaRole.Arn
+      Code:
+        ZipFile: |
+          import json, boto3, os
+
+          def lambda_handler(event, context):
+              body = json.loads(event["body"])
+              user_input = body.get("input", "")
+
+              agent_id = os.environ["AGENT_ID"]
+              client = boto3.client("bedrock-agent-runtime")
+
+              response = client.invoke_agent(
+                  agentId=agent_id,
+                  input={
+                      "text": user_input
+                  }
+              )
+              return {
+                  "statusCode": 200,
+                  "body": json.dumps({"output": response["completion"]["text"]})
+              }
+      Environment:
+        Variables:
+          AGENT_ID: !Ref BedrockAgentId
+      Timeout: 10
+
+  ApiMethodPostAsk:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizer
+      HttpMethod: POST
+      ResourceId: !Ref ApiResourceAsk
+      RestApiId: !Ref ApiGatewayRestApi
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: 
+          Fn::Sub:
+            - arn:aws:apigateway:${Region}:lambda:path/2015-03-31/functions/${LambdaArn}/invocations
+            - Region: !Ref AWS::Region
+              LambdaArn: !GetAtt BedrockAgentLambda.Arn
+
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref BedrockAgentLambda
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: 
+        Fn::Sub: arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*/POST/ask
+
+  CognitoAuthorizer:
+    Type: AWS::ApiGateway::Authorizer
+    Properties:
+      Name: CognitoAuth
+      Type: COGNITO_USER_POOLS
+      IdentitySource: method.request.header.Authorization
+      RestApiId: !Ref ApiGatewayRestApi
+      ProviderARNs:
+        - !GetAtt CognitoUserPool.Arn
+
+Outputs:
+  UserPoolId:
+    Value: !Ref CognitoUserPool
+
+  ClientId:
+    Value: !Ref CognitoUserPoolClient
+
+  ApiEndpoint:
+    Value: 
+      Fn::Sub: https://${ApiGatewayRestApi}.execute-api.${AWS::Region}.amazonaws.com/prod/ask
